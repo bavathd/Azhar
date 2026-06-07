@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>RPLidar Radar</title>
+    <title>Padinarey VSL Guidance Sys</title>
     <style>
       * {
         box-sizing: border-box;
@@ -23,8 +23,9 @@
         font-size: 16px;
         margin: 0 0 10px;
         font-weight: 500;
-        letter-spacing: 1px;
+        letter-spacing: 1.5px;
         color: #8af08a;
+        text-align: center;
       }
       .row {
         display: flex;
@@ -71,7 +72,7 @@
     </style>
   </head>
   <body>
-    <h1>RPLIDAR · RADAR</h1>
+    <h1>PADINAREY VSL GUIDANCE SYS</h1>
     <div class="row">
       <button id="connectBtn">Connect</button>
       <span id="status">Disconnected</span>
@@ -88,6 +89,8 @@
       const CHAR_UUID = "a5a5dead-0002-1000-8000-00805f9b34fb";
       const MAX_MM = 5000;
       const NUM_BINS = 360;
+      const RING_STEP_M = 0.5; // ring spacing in meters
+      const MAX_M = 5.0; // outer ring
 
       let device = null,
         characteristic = null;
@@ -180,21 +183,30 @@
         ctx.fillStyle = "#030503";
         ctx.fillRect(0, 0, w, h);
 
-        // range rings
-        ctx.strokeStyle = "#1a4a1a";
-        ctx.lineWidth = 1;
-        ctx.font = "11px monospace";
-        ctx.fillStyle = "#3a6a3a";
-        for (let m = 1; m <= 5; m++) {
-          const r = (maxR * m) / 5;
+        // range rings every 0.5 m, from 0.5 to 5.0 m
+        const numRings = Math.round(MAX_M / RING_STEP_M); // 10
+        ctx.font = "10px monospace";
+        for (let i = 1; i <= numRings; i++) {
+          const meters = i * RING_STEP_M;
+          const r = (maxR * meters) / MAX_M;
+          // whole-meter rings brighter, half-meter rings dimmer
+          const isWhole = Math.abs(meters - Math.round(meters)) < 0.001;
+          ctx.strokeStyle = isWhole ? "#1a4a1a" : "#0f2f0f";
+          ctx.lineWidth = isWhole ? 1.2 : 0.8;
           ctx.beginPath();
           ctx.arc(cx, cy, r, 0, Math.PI * 2);
           ctx.stroke();
-          ctx.fillText(m + "m", cx + 4, cy - r + 12);
+          // label only whole meters to avoid clutter
+          if (isWhole) {
+            ctx.fillStyle = "#3a6a3a";
+            ctx.fillText(meters.toFixed(0) + "m", cx + 4, cy - r + 11);
+          }
         }
+
         // spokes every 30°
         ctx.strokeStyle = "#0e2a0e";
         ctx.fillStyle = "#4a7a4a";
+        ctx.font = "11px monospace";
         for (let a = 0; a < 360; a += 30) {
           const rad = ((a - 90) * Math.PI) / 180;
           ctx.beginPath();
