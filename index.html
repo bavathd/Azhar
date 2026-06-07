@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RPLidar Radar</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 14px;
+        background: #060a06;
+        color: #c8e0c8;
+        font-family: -apple-system, system-ui, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 100vh;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 10px;
+        font-weight: 500;
+        letter-spacing: 1px;
+        color: #8af08a;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      button {
+        background: #1a3a1a;
+        color: #d0f0d0;
+        border: 1px solid #3a6a3a;
+        padding: 9px 16px;
+        border-radius: 4px;
+        font-size: 14px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      button:hover:not(:disabled) {
+        background: #2a5a2a;
+      }
+      button:disabled {
+        opacity: 0.5;
+      }
+      #status {
+        font-size: 12px;
+        color: #7aa07a;
+      }
+      canvas {
+        background: #030503;
+        border: 1px solid #1a3a1a;
+        max-width: 100%;
+        height: auto;
+      }
+      .hint {
+        font-size: 11px;
+        color: #5a7a5a;
+        margin-top: 10px;
+        max-width: 480px;
+        text-align: center;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>RPLIDAR · RADAR</h1>
+    <div class="row">
+      <button id="connectBtn">Connect</button>
+      <span id="status">Disconnected</span>
+    </div>
+    <canvas id="radar" width="560" height="560"></canvas>
+    <div class="hint">
+      Chrome / Edge on desktop or Android. iOS Safari does not support Web
+      Bluetooth — use Bluefy.<br />
+      Page must be served over HTTPS or opened locally (file://).
+    </div>
+
+    <script>
+      const SERVICE_UUID = "a5a5dead-0001-1000-8000-00805f9b34fb";
+      const CHAR_UUID = "a5a5dead-0002-1000-8000-00805f9b34fb";
+      const MAX_MM = 5000;
+      const NUM_BINS = 360;
+
+      let device = null,
+        characteristic = null;
+      let bins = new Array(NUM_BINS).fill(0);
+      let currentFrameId = -1,
+        chunksReceived = 0,
+        totalChunks = 0;
+      let frameCount = 0,
+        hz = 0,
+        hzCalcTime = performance.now();
+      let sweepAngle = 0;
+
+      const $btn = document.getElementById("connectBtn");
+      const $status = document.getElementById("status");
+      const $canvas = document.getElementById("radar");
+      const ctx = $canvas.getContext("2d");
+
+      function setStatus(s) {
+        $status.textContent = s;
+      }
+
+      $btn.addEventListener("click", async () => {
+        if (device && device.gatt.connected) {
+          device.gatt.disconnect();
+          return;
+        }
+        try {
+          setStatus("Requesting device...");
+          device = await navigator.bluetooth.requestDevice({
+            filters: [{ services: [SERVICE_UUID] }],
+          });
+          device.addEventListener("gattserverdisconnected", onDisconnected);
+          setStatus("Connecting...");
+          const server = await device.gatt.connect();
+          const svc = await server.getPrimaryService(SERVICE_UUID);
+          characteristic = await svc.getCharacteristic(CHAR_UUID);
+          await characteristic.startNotifications();
+          characteristic.addEventListener("characteristicvaluechanged", onData);
+          $btn.textContent = "Disconnect";
+          setStatus(`Connected · ${device.name || "unnamed"}`);
+        } catch (e) {
+          setStatus("Error: " + e.message);
+        }
+      });
+
+      function onDisconnected() {
+        setStatus("Disconnected");
+        $btn.textContent = "Connect";
+        characteristic = null;
+      }
+
+      function onData(event) {
+        const v = event.target.value;
+        if (v.byteLength < 4) return;
+        const frameId = v.getUint8(0);
+        const chunk = v.getUint8(1);
+        const total = v.getUint8(2);
+        const startAng = v.getUint8(3);
+
+        if (frameId !== currentFrameId) {
+          currentFrameId = frameId;
+          chunksReceived = 0;
+          totalChunks = total;
+        }
+        const n = (v.byteLength - 4) / 2;
+        for (let i = 0; i < n; i++) {
+          const idx = startAng + i;
+          if (idx >= 0 && idx < NUM_BINS)
+            bins[idx] = v.getUint16(4 + i * 2, true);
+        }
+        chunksReceived++;
+        if (chunksReceived >= totalChunks) {
+          frameCount++;
+          const now = performance.now();
+          if (now - hzCalcTime > 1000) {
+            hz = (frameCount * 1000) / (now - hzCalcTime);
+            frameCount = 0;
+            hzCalcTime = now;
+          }
+        }
+      }
+
+      function render() {
+        const w = $canvas.width,
+          h = $canvas.height;
+        const cx = w / 2,
+          cy = h / 2;
+        const maxR = Math.min(w, h) / 2 - 28;
+
+        ctx.fillStyle = "#030503";
+        ctx.fillRect(0, 0, w, h);
+
+        // range rings
+        ctx.strokeStyle = "#1a4a1a";
+        ctx.lineWidth = 1;
+        ctx.font = "11px monospace";
+        ctx.fillStyle = "#3a6a3a";
+        for (let m = 1; m <= 5; m++) {
+          const r = (maxR * m) / 5;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillText(m + "m", cx + 4, cy - r + 12);
+        }
+        // spokes every 30°
+        ctx.strokeStyle = "#0e2a0e";
+        ctx.fillStyle = "#4a7a4a";
+        for (let a = 0; a < 360; a += 30) {
+          const rad = ((a - 90) * Math.PI) / 180;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(cx + Math.cos(rad) * maxR, cy + Math.sin(rad) * maxR);
+          ctx.stroke();
+          const lx = cx + Math.cos(rad) * (maxR + 14) - 10;
+          const ly = cy + Math.sin(rad) * (maxR + 14) + 4;
+          ctx.fillText(a + "°", lx, ly);
+        }
+
+        // sweep highlight
+        sweepAngle = (sweepAngle + 4) % 360;
+        const sweepRad = ((sweepAngle - 90) * Math.PI) / 180;
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxR);
+        grad.addColorStop(0, "rgba(80,255,80,0.10)");
+        grad.addColorStop(1, "rgba(80,255,80,0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, maxR, sweepRad - 0.5, sweepRad);
+        ctx.closePath();
+        ctx.fill();
+
+        // points
+        for (let a = 0; a < NUM_BINS; a++) {
+          const d = bins[a];
+          if (d === 0 || d > MAX_MM) continue;
+          const r = (maxR * d) / MAX_MM;
+          const rad = ((a - 90) * Math.PI) / 180;
+          const x = cx + Math.cos(rad) * r;
+          const y = cy + Math.sin(rad) * r;
+          const t = d / MAX_MM;
+          let col;
+          if (t < 0.4) col = `rgb(255, ${Math.floor(80 + t * 250)}, 60)`;
+          else if (t < 0.7)
+            col = `rgb(${Math.floor(255 - (t - 0.4) * 400)}, 220, 60)`;
+          else col = `rgb(60, 220, ${Math.floor(60 + (t - 0.7) * 300)})`;
+          ctx.fillStyle = col;
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // center
+        ctx.fillStyle = "#7aff7a";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (device && device.gatt.connected)
+          setStatus(`Connected · ${hz.toFixed(1)} Hz`);
+        requestAnimationFrame(render);
+      }
+      render();
+    </script>
+  </body>
+</html>
